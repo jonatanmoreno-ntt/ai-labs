@@ -2,8 +2,18 @@ import { CommonModule } from '@angular/common';
 import { Component } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import axios from 'axios';
-import merge from 'lodash/merge';
+import { AuthenticatedUser, LoginMessage, LoginRequest, UserPreferences } from '../models';
+import { AuthService } from '../services/auth.service';
+import { getRequestErrorMessage } from '../services/request-error';
+import { SessionService } from '../services/session.service';
+
+const DEFAULT_PREFERENCES: UserPreferences = {
+  theme: 'light',
+  showTips: true,
+  compact: false
+};
+const LOGIN_CLIENT = 'angular-workshop';
+const LOGIN_ERROR_MESSAGE = 'Error desconocido';
 
 @Component({
   selector: 'app-login',
@@ -13,52 +23,60 @@ import merge from 'lodash/merge';
   styleUrl: './login.component.css'
 })
 export class LoginComponent {
-  username: any = '';
-  password: any = '';
-  busy: any = false;
-  message: any = '';
-  preferences: any = { theme: 'light', showTips: true, compact: false };
+  username = '';
+  password = '';
+  busy = false;
+  message: LoginMessage | null = null;
+  preferences: UserPreferences = DEFAULT_PREFERENCES;
 
-  constructor(private router: Router) {
+  constructor(
+    private router: Router,
+    private authService: AuthService,
+    private sessionService: SessionService
+  ) {
     try {
-      const saved = JSON.parse(localStorage.getItem('workshop_preferences') || '{}');
-      this.preferences = merge(this.preferences, saved);
+      this.preferences = this.sessionService.loadPreferences(DEFAULT_PREFERENCES);
     } catch (error) {
       console.log('Preferences could not be loaded', error);
     }
   }
 
   async login(): Promise<void> {
-    this.message = '';
-    if (this.username === null || this.username === undefined || String(this.username).trim() === '') {
-      this.message = '<strong>Ingrese un usuario.</strong>';
-    } else {
-      if (this.password === null || this.password === undefined || String(this.password).trim() === '') {
-        this.message = '<strong>Ingrese una contraseña.</strong>';
-      } else {
-        this.busy = true;
-        try {
-          const response: any = await axios.post(
-            'http://localhost:8080/auth/login',
-            { username: this.username, password: this.password, client: 'angular-workshop' },
-            { timeout: 5000 }
-          );
-          if (response && response.data && response.data.token) {
-            localStorage.setItem('workshop_token', response.data.token);
-            localStorage.setItem('workshop_user', JSON.stringify(response.data.user));
-            localStorage.setItem('workshop_preferences', JSON.stringify(this.preferences));
-            await this.router.navigate(['/dashboard']);
-          } else {
-            this.message = '<strong>El backend respondió sin token.</strong>';
-          }
-        } catch (error: any) {
-          const backendMessage = error?.response?.data?.message || error?.message || 'Error desconocido';
-          this.message = '<strong>No se pudo autenticar a ' + this.username + '.</strong><br>' + backendMessage;
-          console.error(error);
-        } finally {
-          this.busy = false;
-        }
+    this.message = null;
+    if (!this.username.trim()) {
+      this.message = { title: 'Ingrese un usuario.' };
+      return;
+    }
+
+    if (!this.password.trim()) {
+      this.message = { title: 'Ingrese una contraseña.' };
+      return;
+    }
+
+    this.busy = true;
+    try {
+      const request: LoginRequest = {
+        username: this.username,
+        password: this.password,
+        client: LOGIN_CLIENT
+      };
+      const response = await this.authService.login(request);
+      if (!response.token) {
+        this.message = { title: 'El backend respondió sin token.' };
+        return;
       }
+
+      const user: AuthenticatedUser = response.user;
+      this.sessionService.saveLogin(response.token, user, this.preferences);
+      await this.router.navigate(['/dashboard']);
+    } catch (error: unknown) {
+      this.message = {
+        title: `No se pudo autenticar a ${this.username}.`,
+        detail: getRequestErrorMessage(error, 'message', LOGIN_ERROR_MESSAGE)
+      };
+      console.error(error);
+    } finally {
+      this.busy = false;
     }
   }
 }
